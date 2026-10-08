@@ -1,0 +1,56 @@
+package photon
+
+import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"strconv"
+)
+
+// Hashtable serializes with stringified keys; json.Marshal does not accept
+// map[any]any.
+type Hashtable map[any]any
+
+func (h Hashtable) MarshalJSONTo(enc *jsontext.Encoder) error {
+	out := make(map[string]any, len(h))
+	for k, v := range h {
+		out[fmt.Sprintf("%v", k)] = v
+	}
+	return json.MarshalEncode(enc, out)
+}
+
+// ByteArray serializes as {"type":"Buffer","data":[...]} because the web
+// front-end parses byte arrays assuming the Node.js Buffer shape.
+type ByteArray []byte
+
+func (b ByteArray) MarshalJSON() ([]byte, error) {
+	const prefix = `{"type":"Buffer","data":[`
+	const suffix = `]}`
+	out := make([]byte, 0, len(prefix)+len(suffix)+4*len(b))
+	out = append(out, prefix...)
+	for i, v := range b {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = strconv.AppendUint(out, uint64(v), 10)
+	}
+	out = append(out, suffix...)
+	return out, nil
+}
+
+type EventData struct {
+	Code       byte
+	Parameters map[byte]any
+}
+
+type OperationRequest struct {
+	OperationCode byte
+	Parameters    map[byte]any
+}
+
+type OperationResponse struct {
+	OperationCode byte
+	ReturnCode    int16
+	DebugMessage  string
+	Parameters    map[byte]any
+}

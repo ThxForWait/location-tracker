@@ -40,7 +40,20 @@ func main() {
 
 	// Инициализируем парсер (модуль 2)
 	// Передаем ему обработчик событий из трекера
-	photonParser := photon.NewParser(nil, tracker.HandleResponse)
+	//photonParser := photon.NewParser(nil, tracker.HandleResponse)
+	photonParser := photon.NewPhotonParser(
+		func(ev *photon.EventData) { // промежуточный колбек
+			photon.PostProcessEvent(ev)// полуобработаные данные
+			photon.FinalizeEvent(ev)// тут функция которая обрабанывает данные окончательно
+			tracker.OnEvent(ev) // уже настоящий кол бек получает полность обработанные данны
+		},
+		nil,
+		func(resp *photon.OperationResponse) { // промежуточный колбек
+			photon.PostProcessResponse(resp)// полуобработаные данные
+			photon.FinalizeResponse(resp)// тут функция которая обрабанывает данные окончательно
+			tracker.OnResponse(resp) // уже настоящий кол бек получает полность обработанные данны
+		},
+	)
 
 	// Запускаем захват пакетов (модуль 1) в отдельной горутине
 	go func() {
@@ -55,7 +68,7 @@ func main() {
 	// Основной цикл: читаем сырые пакеты и отправляем их в парсер
 	go func() {
 		for payload := range packetChan {
-			photonParser.ParsePayload(payload)
+			photonParser.ReceivePacket(payload)
 		}
 	}()
 

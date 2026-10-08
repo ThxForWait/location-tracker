@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"location-tracker/config"
+	"location-tracker/photon"
 )
 
 // Tracker обрабатывает события от парсера и записывает переходы в файл.
@@ -16,6 +17,7 @@ type Tracker struct {
 	logFile *os.File
 	mu      sync.Mutex
 	currentZoneID string
+	NextZoneID string
 }
 
 // NewTracker создает новый трекер и открывает файл для записи.
@@ -30,58 +32,42 @@ func NewTracker() (*Tracker, error) {
 	return &Tracker{
 		logFile: file,
 		currentZoneID: "unknown",
+		NextZoneID: "unknown",
 	}, nil
 }
 
 // HandleEvent обрабатывает одно событие от Photon-парсера.
 // code — код события, parameters — срез параметров.
-func (t *Tracker) HandleEvent(code uint8, parameters []interface{}) {
-	switch code {
-	
-	case 140: // ClusterInfoUpdate (Смена локации)
-		t.handleZoneChange(parameters)
-
-	case 3: // Move (Движение персонажей/объектов)
-		//t.handlePlayerMove(parameters)
-
-	case 73: // ChatMessage (Игровой чат)
-		//t.handleChatMessage(parameters)
-
-	default:
-		// Сюда попадают все остальные сотни кодов игры, которые мы пока не обрабатываем.
-		// Они не будут засорять консоль и лог.
-	}
+func (t *Tracker) OnEvent(ev *photon.EventData) {
+	//log.Printf("EVENTDATA: %v+", ev)
 }
 
-func (t *Tracker) HandleResponse(opCode uint8, parameters []interface{}) {
-	if opCode != 1 || len(parameters) == 0 {
-		return
+func (t *Tracker) OnResponse(resp *photon.OperationResponse) {
+	albionOp := photon.GetInt(resp.Parameters, 253)
+	if albionOp == 0 {
+		albionOp = int64(resp.OperationCode)
 	}
-
-	var newZoneID string = "unknown"
-
-	// Сценарий 1: Короткий пакет перехода (3 параметра)
-	if len(parameters) == 3 {
-		if bytesID, ok := parameters[0].([]byte); ok && len(bytesID) > 0 {
-			newZoneID = string(bytesID)
-		}
-	} else {
+	clusterId := ""
+	switch albionOp{
 		
-		// // Сценарий 2: Огромный пакет инициализации (первым идет числовой ID)
-		// firstParam := parameters[0]
-		// switch v := firstParam.(type) {
-		// case int:
-		// 	newZoneID = fmt.Sprintf("%d", v)
-		// case int32:
-		// 	newZoneID = fmt.Sprintf("%d", v)
-		// case int64:
-		// 	newZoneID = fmt.Sprintf("%d", v)
-		// }
+		case 41:
+			clusterId = photon.GetStr(resp.Parameters, 0)
+			if clusterId == ""  {log.Printf("Ошибка в считывании ID локации, OpCode 41"); return}
+			t.NextZoneID = clusterId
+		case 2:
+			clusterId = photon.GetStr(resp.Parameters, 8)
+			if clusterId == ""  {log.Printf("Ошибка в считывании ID локации, OpCode 2"); return}
+			if clusterId != t.NextZoneID {
+				log.Printf("Ошибка, ID в OpCode 41 и 2 не совпало")
+				t.currentZoneID = clusterId
+				t.NextZoneID = "unknown"
+			}
+			t.saveLocation(clusterId)
+		default :
+			//log.Printf("Необработанный пакет OnResponse code: %d , data %v+", albionOp, resp.Parameters)
 	}
-
-	if newZoneID != "unknown" && newZoneID != "0" {
-		t.saveLocation(newZoneID)
-	}
+	
+	
 }
 
 func (t *Tracker) handleZoneChange(parameters []interface{}) {
