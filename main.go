@@ -12,6 +12,7 @@ import (
 	"location-tracker/config"
 	"location-tracker/photon"
 	"location-tracker/tracker"
+	"location-tracker/api"
 )
 
 func main() {
@@ -32,6 +33,7 @@ func main() {
 	packetChan := make(chan []byte, config.PacketChannelSize)
 
 	// Инициализируем трекер (модуль 3)
+	apiClient := api.NewClient(config.ApiUrl)
 	tracker, err := tracker.NewTracker()
 	if err != nil {
 		log.Fatalf("Ошибка инициализации трекера: %v", err)

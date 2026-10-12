@@ -12,3 +12,5 @@ const LogFilePath = "location_history.log"
 
 // Размер буфера для канала с сырыми пакетами
 const PacketChannelSize = 4096
+
+const ApiUrl = "https://telifon-map.heliohost.us/albion-tracker-map/map/api/packet"

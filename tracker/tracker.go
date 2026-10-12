@@ -10,6 +10,7 @@ import (
 
 	"location-tracker/config"
 	"location-tracker/photon"
+	"location-tracker/api"
 )
 
 // Tracker обрабатывает события от парсера и записывает переходы в файл.
@@ -18,11 +19,26 @@ type Tracker struct {
 	mu      sync.Mutex
 	currentZoneID string
 	NextZoneID string
+	apiClient api.Client
 }
 
 // NewTracker создает новый трекер и открывает файл для записи.
-func NewTracker() (*Tracker, error) {
-	file, err := os.OpenFile(config.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func NewTracker(apiClient *api.Client) (*Tracker, error) {
+	file, err := os.OpenFile(confifunc NewTracker() (*Tracker, error) {
+		file, err := os.OpenFile(config.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось открыть файл лога: %w", err)
+		}
+
+		log.Printf("Логирование переходов будет вестись в файл: %s", config.LogFilePath)
+
+		return &Tracker{
+			logFile: file,
+			currentZoneID: "unknown",
+			NextZoneID: "unknown",
+			apiClient: api.Client
+		}, nil
+	}g.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось открыть файл лога: %w", err)
 	}
@@ -49,7 +65,7 @@ func (t *Tracker) OnResponse(resp *photon.OperationResponse) {
 	}
 	clusterId := ""
 	switch albionOp{
-		
+
 		case 41:
 			clusterId = photon.GetStr(resp.Parameters, 0)
 			if clusterId == ""  {log.Printf("Ошибка в считывании ID локации, OpCode 41"); return}
@@ -66,8 +82,8 @@ func (t *Tracker) OnResponse(resp *photon.OperationResponse) {
 		default :
 			//log.Printf("Необработанный пакет OnResponse code: %d , data %v+", albionOp, resp.Parameters)
 	}
-	
-	
+
+
 }
 
 func (t *Tracker) handleZoneChange(parameters []interface{}) {
@@ -110,7 +126,7 @@ func (t *Tracker) saveLocation(newZoneID string) {
 
 	// 3. Записываем отформатированную строку в текстовый файл
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	logLine := fmt.Sprintf("%s | %s [%s] ➔ %s [%s]\n", 
+	logLine := fmt.Sprintf("%s | %s [%s] ➔ %s [%s]\n",
 		timestamp, oldZoneName, t.currentZoneID, newZoneName, newZoneID)
 
 	if _, err := t.logFile.WriteString(logLine); err != nil {
