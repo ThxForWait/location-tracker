@@ -52,7 +52,9 @@ func (c *Client) sendPacket(ctx context.Context, payload any, out any) error {
 	if err != nil {
 		return fmt.Errorf("read body: %w", err)
 	}
-
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("bad status %d, body=%q", resp.StatusCode, string(raw))
+	}
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("decode response (status=%d): %w, body=%s", resp.StatusCode, err, raw)

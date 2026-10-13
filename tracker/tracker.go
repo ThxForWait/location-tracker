@@ -2,15 +2,16 @@
 package tracker
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"sync"
 	"time"
 
+	"location-tracker/api"
 	"location-tracker/config"
 	"location-tracker/photon"
-	"location-tracker/api"
 )
 
 // Tracker обрабатывает события от парсера и записывает переходы в файл.
@@ -19,26 +20,12 @@ type Tracker struct {
 	mu      sync.Mutex
 	currentZoneID string
 	NextZoneID string
-	apiClient api.Client
+	apiClient *api.Client
 }
 
 // NewTracker создает новый трекер и открывает файл для записи.
 func NewTracker(apiClient *api.Client) (*Tracker, error) {
-	file, err := os.OpenFile(confifunc NewTracker() (*Tracker, error) {
-		file, err := os.OpenFile(config.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, fmt.Errorf("не удалось открыть файл лога: %w", err)
-		}
-
-		log.Printf("Логирование переходов будет вестись в файл: %s", config.LogFilePath)
-
-		return &Tracker{
-			logFile: file,
-			currentZoneID: "unknown",
-			NextZoneID: "unknown",
-			apiClient: api.Client
-		}, nil
-	}g.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(config.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось открыть файл лога: %w", err)
 	}
@@ -49,6 +36,7 @@ func NewTracker(apiClient *api.Client) (*Tracker, error) {
 		logFile: file,
 		currentZoneID: "unknown",
 		NextZoneID: "unknown",
+		apiClient: apiClient,
 	}, nil
 }
 
@@ -116,7 +104,8 @@ func (t *Tracker) saveLocation(newZoneID string) {
 	if newZoneID == t.currentZoneID {
 		return
 	}
-
+	
+	
 	// 1. Переводим старый и новый ID в понятные названия через базу зон data/zones.json
 	oldZoneName := config.DB.GetZoneName(t.currentZoneID)
 	newZoneName := config.DB.GetZoneName(newZoneID)
@@ -132,9 +121,24 @@ func (t *Tracker) saveLocation(newZoneID string) {
 	if _, err := t.logFile.WriteString(logLine); err != nil {
 		log.Printf("Ошибка записи в файл лога: %v", err)
 	}
-
+	
 	// 4. Обновляем текущий ID локации: теперь «новая» зона стала нашей «текущей»
+	oldZoneID := t.currentZoneID
 	t.currentZoneID = newZoneID
+
+	now := api.NowUTC()
+	resp, err := t.apiClient.Connect(
+		context.Background(), // ← вот он, ctx
+		oldZoneID, newZoneID,
+		now, now.Add(2*time.Hour),
+	)
+	if err != nil {
+		log.Printf("api.Connect error: %v", err)
+		return
+	}
+	log.Printf("api.Connect: %v", resp)
+
+	
 }
 
 

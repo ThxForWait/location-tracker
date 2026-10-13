@@ -17,11 +17,22 @@ import (
 
 func main() {
 	// Флаг для указания сетевого интерфейса
-	iface := flag.String("iface", "", "Сетевой интерфейс для захвата (например, \\Device\\NPF_{...})")
+	iface := flag.String("iface", "auto", "Сетевой интерфейс или 'auto' для автовыбора")
+	listFlag := flag.Bool("list", false, "Показать список интерфейсов и выйти")
 	flag.Parse()
-
-	if *iface == "" {
-		log.Fatal("Укажите сетевой интерфейс через флаг -iface")
+	if *listFlag {
+		if err := capture.PrintList(); err != nil {
+			log.Fatalf("Ошибка: %v", err)
+		}
+		return
+	}
+	ifaceName := *iface
+	if ifaceName == "auto" || ifaceName == "" {
+		chosen, err := capture.Auto()
+		if err != nil {
+			log.Fatalf("Автовыбор интерфейса не удался: %v. Запустите с -list, чтобы увидеть список.", err)
+		}
+		ifaceName = chosen
 	}
 	//файл с айдишниками локаций
 	err := config.DB.Load("C:/PyProj/location-tracker/data/zones.json")
@@ -34,7 +45,7 @@ func main() {
 
 	// Инициализируем трекер (модуль 3)
 	apiClient := api.NewClient(config.ApiUrl)
-	tracker, err := tracker.NewTracker()
+	tracker, err := tracker.NewTracker(apiClient)
 	if err != nil {
 		log.Fatalf("Ошибка инициализации трекера: %v", err)
 	}
@@ -59,7 +70,7 @@ func main() {
 
 	// Запускаем захват пакетов (модуль 1) в отдельной горутине
 	go func() {
-		if err := capture.StartCapture(*iface, packetChan); err != nil {
+		if err := capture.StartCapture(ifaceName, packetChan); err != nil {
 			log.Fatalf("Ошибка захвата пакетов: %v", err)
 		}
 	}()
@@ -71,6 +82,7 @@ func main() {
 	go func() {
 		for payload := range packetChan {
 			photonParser.ReceivePacket(payload)
+			//log.Printf("новый пакет")
 		}
 	}()
 
