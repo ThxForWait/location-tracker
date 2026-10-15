@@ -132,6 +132,9 @@ func classifyTransition(fromID, toID string, at time.Time) (Transition, bool, st
 	}
 	from := config.DB.GetZoneKind(fromID)
 	to := config.DB.GetZoneKind(toID)
+	if from == config.ZoneCity || to == config.ZoneCity {
+		return Transition{}, false, "город, не отправляется"
+	}
 	if from == config.ZoneInstance || to == config.ZoneInstance {
 		return Transition{}, false, "инстанс, не отправляется"
 	}

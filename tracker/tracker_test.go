@@ -49,15 +49,19 @@ func TestTransitions(t *testing.T) {
 	// Вход в хайдаут и выход из него не отправляются.
 	tr.OnResponse(join("@HIDEOUT@4356@299c1d12"))
 	tr.OnResponse(join("TNL-057"))
-	// Город → город (две статичные зоны): StaticEdge.
-	tr.OnResponse(join("1000"))
-	tr.OnResponse(join("1006"))
+	// Всё, что связано с городами, не отправляется: портал города в чёрной зоне,
+	// сам город, его банк и выход из города в открытую зону.
+	tr.OnResponse(join("4301")) // Fort Sterling Portal
+	tr.OnResponse(join("1000")) // Lymhurst
+	tr.OnResponse(join("1001")) // Bank of Lymhurst
+	tr.OnResponse(join("1006")) // Forest Cross
+	// Две статичные зоны открытого мира: StaticEdge.
+	tr.OnResponse(join("3356"))
 
 	want := []Transition{
 		{From: "3356", To: "TNL-342", Static: false},
 		{From: "TNL-342", To: "TNL-057", Static: false},
-		{From: "TNL-057", To: "1000", Static: false}, // дорога → город
-		{From: "1000", To: "1006", Static: true},
+		{From: "1006", To: "3356", Static: true},
 	}
 
 	if len(sink.got) != len(want) {
@@ -75,7 +79,14 @@ func TestZoneKinds(t *testing.T) {
 	cases := map[string]config.ZoneKind{
 		"TNL-342":               config.ZoneRoad,
 		"3356":                  config.ZoneStatic,
-		"1000":                  config.ZoneStatic,
+		"1006":                  config.ZoneStatic, // Forest Cross
+		"0008":                  config.ZoneStatic, // Morgana's Rest
+		"1000":                  config.ZoneCity,   // Lymhurst
+		"1001":                  config.ZoneCity,   // Bank of Lymhurst
+		"4301":                  config.ZoneCity,   // Fort Sterling Portal
+		"3003":                  config.ZoneCity,   // Caerleon
+		"5002":                  config.ZoneCity,   // Brecilien Bank
+		"1000-HellDen":          config.ZoneCity,   // Antiquarian's Den
 		"ISLAND-PLAYER-0001a":   config.ZoneInstance,
 		"@HIDEOUT@4356@abc":     config.ZoneInstance,
 		"@MISTS@xyz":            config.ZoneInstance,

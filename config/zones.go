@@ -23,7 +23,10 @@ const (
 	// ZoneInstance — всё, что не является узлом карты: данжи, острова,
 	// хайдауты, арены, Мгла и неизвестные ID. На сервер не отправляется.
 	ZoneInstance ZoneKind = iota
-	// ZoneStatic — постоянная зона открытого мира (города, открытые зоны, проходы).
+	// ZoneCity — города и всё, что к ним относится: банки, рынки, порталы
+	// городов в чёрной зоне, Карлеон, Брисилиен. Переходы с ними не отправляются.
+	ZoneCity
+	// ZoneStatic — постоянная зона открытого мира (открытые зоны, проходы, перекрёстки).
 	ZoneStatic
 	// ZoneRoad — зона Дорог Авалона (TNL-*).
 	ZoneRoad
@@ -35,6 +38,8 @@ func (k ZoneKind) String() string {
 		return "static"
 	case ZoneRoad:
 		return "road"
+	case ZoneCity:
+		return "city"
 	default:
 		return "instance"
 	}
@@ -119,13 +124,35 @@ func (db *ZonesDatabase) GetZoneKind(zoneID string) ZoneKind {
 	return classifyZoneType(zone.Type)
 }
 
+// cityZoneTypes — типы городских зон (поле type в zones.json).
+// Должны совпадать с сервером (albiontrackermap/zones.py, CITY_ZONE_TYPES).
+var cityZoneTypes = map[string]bool{
+	// Королевские города и их банки/рынки
+	"PLAYERCITY_SAFEAREA_01":          true,
+	"PLAYERCITY_SAFEAREA_02":          true,
+	"PLAYERCITY_SAFEAREA_NOFURNITURE": true,
+	// Порталы королевских городов в чёрной зоне («Fort Sterling Portal» и т.п.)
+	"PLAYERCITY_BLACK_PORTALCITY_NOFURNITURE": true,
+	// Карлеон, его банк, рынки и зал славы
+	"PLAYERCITY_BLACK_ROYAL":                          true,
+	"PLAYERCITY_BLACK_ROYAL_NOFURNITURE":              true,
+	"PLAYERCITY_BLACK_ROYAL_NOFURNITURE_HALL_OF_FAME": true,
+	// Брисилиен, его банк и рынок
+	"PLAYERCITY_BLACK":             true,
+	"PLAYERCITY_BLACK_NOFURNITURE": true,
+	// Логово антиквара внутри городов
+	"PLAYERCITY_HELLDEN": true,
+}
+
 func classifyZoneType(zoneType string) ZoneKind {
 	switch {
 	case strings.HasPrefix(zoneType, "TUNNEL_"):
 		return ZoneRoad
+	case cityZoneTypes[zoneType]:
+		return ZoneCity
 	case strings.HasPrefix(zoneType, "OPENPVP_"),
 		strings.HasPrefix(zoneType, "PASSAGE_"),
-		strings.HasPrefix(zoneType, "PLAYERCITY_") && !strings.Contains(zoneType, "HALL_OF_FAME"),
+		strings.HasPrefix(zoneType, "PLAYERCITY_"),
 		zoneType == "STARTINGCITY",
 		zoneType == "SAFEAREA",
 		zoneType == "STARTAREA":
