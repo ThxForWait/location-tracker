@@ -22,6 +22,13 @@ const ApiUrl = "https://telifon-map.heliohost.us/albion-tracker-map/map/api/pack
 // Пока фиксированное значение для теста: реального таймера в пакетах не найдено.
 const PortalLifetime = 2 * time.Hour
 
+// Сколько активный интерфейс должен молчать, чтобы переключиться на другой
+// (например, когда игрок включил VPN).
+const InterfaceSwitchAfter = 3 * time.Second
+
+// Как часто искать новые интерфейсы (VPN-адаптеры появляются при подключении).
+const InterfaceRescanInterval = 10 * time.Second
+
 // Размер очереди переходов, ожидающих отправки на сервер.
 const SendQueueSize = 256
 

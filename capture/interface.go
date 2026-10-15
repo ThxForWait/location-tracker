@@ -1,9 +1,8 @@
-// capture/auto.go
+// capture/interface.go
 package capture
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sort"
 	"strings"
@@ -87,37 +86,6 @@ func List() ([]InterfaceInfo, error) {
 	return out, nil
 }
 
-// Auto выбирает наиболее подходящий интерфейс для захвата.
-// Возвращает ошибку, если подходящий интерфейс не найден.
-func Auto() (string, error) {
-	ifaces, err := List()
-	if err != nil {
-		return "", err
-	}
-
-	for _, iface := range ifaces {
-		if !iface.HasRoutableIP() {
-			continue
-		}
-		if iface.Kind == KindEthernet || iface.Kind == KindWireless {
-			log.Printf("[capture] Автовыбор: %s (%s, IP=%v)",
-				iface.Description, iface.Kind, iface.IPs)
-			return iface.Name, nil
-		}
-	}
-
-	// Fallback: любой интерфейс с хоть каким-то IP.
-	for _, iface := range ifaces {
-		if iface.HasRoutableIP() {
-			log.Printf("[capture] Автовыбор (fallback): %s (%s, IP=%v)",
-				iface.Description, iface.Kind, iface.IPs)
-			return iface.Name, nil
-		}
-	}
-
-	return "", fmt.Errorf("не найдено ни одного подходящего сетевого интерфейса")
-}
-
 // PrintList выводит список интерфейсов в stdout (для флага -list).
 func PrintList() error {
 	ifaces, err := List()
@@ -140,7 +108,8 @@ func PrintList() error {
 		}
 		fmt.Println()
 	}
-	fmt.Println("Интерфейсы, помеченные * — рекомендуемые для захвата.")
+	fmt.Println("По умолчанию (-iface auto) трекер слушает все интерфейсы сразу.")
+	fmt.Println("Помеченные * — физические адаптеры с IP-адресом.")
 	return nil
 }
 

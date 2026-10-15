@@ -2,12 +2,13 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"flag"
 	"log"
-	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"location-tracker/api"
 	"location-tracker/capture"
@@ -23,7 +24,7 @@ var embeddedZones []byte
 
 func main() {
 	// Флаг для указания сетевого интерфейса
-	iface := flag.String("iface", "auto", "Сетевой интерфейс или 'auto' для автовыбора")
+	iface := flag.String("iface", "auto", "Сетевой интерфейс или 'auto', чтобы слушать все и выбирать активный на лету")
 	listFlag := flag.Bool("list", false, "Показать список интерфейсов и выйти")
 	debug := flag.Bool("debug", false, "Отправлять данные на локальный сервер ("+config.DebugApiUrl+")")
 	apiURL := flag.String("api", "", "URL API (по умолчанию боевой сервер, с -debug — локальный)")
@@ -35,13 +36,10 @@ func main() {
 		}
 		return
 	}
-	ifaceName := *iface
-	if ifaceName == "auto" || ifaceName == "" {
-		chosen, err := capture.Auto()
-		if err != nil {
-			log.Fatalf("Автовыбор интерфейса не удался: %v. Запустите с -list, чтобы увидеть список.", err)
-		}
-		ifaceName = chosen
+	// "" — слушать все интерфейсы
+	onlyIface := *iface
+	if onlyIface == "auto" {
+		onlyIface = ""
 	}
 
 	// База зон: встроенная или из файла
@@ -56,7 +54,7 @@ func main() {
 	}
 
 	// Создаем канал для сырых пакетов
-	packetChan := make(chan []byte, config.PacketChannelSize)
+	packetChan := make(chan capture.Packet, config.PacketChannelSize)
 
 	// Инициализируем трекер (модуль 3)
 	url := *apiURL
@@ -76,37 +74,51 @@ func main() {
 
 	// Инициализируем парсер (модуль 2)
 	// События пока не используются, поэтому их колбек не передаём.
-	photonParser := photon.NewPhotonParser(
-		nil,
-		nil,
-		func(resp *photon.OperationResponse) {
-			photon.FinalizeResponse(resp) // внутри уже вызывается PostProcessResponse
-			tracker.OnResponse(resp)
-		},
-	)
+	newParser := func() *photon.PhotonParser {
+		return photon.NewPhotonParser(
+			nil,
+			nil,
+			func(resp *photon.OperationResponse) {
+				photon.FinalizeResponse(resp) // внутри уже вызывается PostProcessResponse
+				tracker.OnResponse(resp)
+			},
+		)
+	}
 
-	// Запускаем захват пакетов (модуль 1) в отдельной горутине
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Запускаем захват пакетов (модуль 1) со всех интерфейсов в отдельной горутине
+	captureDone := make(chan struct{})
 	go func() {
-		if err := capture.StartCapture(ifaceName, packetChan); err != nil {
-			log.Fatalf("Ошибка захвата пакетов: %v", err)
-		}
+		defer close(captureDone)
+		capture.Start(ctx, onlyIface, packetChan)
 	}()
 
 	log.Println("Трекер локаций запущен. Ожидание переходов...")
 	log.Println("Нажмите Ctrl+C для выхода.")
 
-	// Основной цикл: читаем сырые пакеты и отправляем их в парсер
+	// Основной цикл: берём пакеты только с активного интерфейса и отправляем их в парсер
 	go func() {
-		for payload := range packetChan {
-			photonParser.ReceivePacket(payload)
+		selector := capture.NewSelector(config.InterfaceSwitchAfter)
+		photonParser := newParser()
+		for pkt := range packetChan {
+			accept, switched := selector.Accept(pkt.Iface, time.Now())
+			if !accept {
+				continue
+			}
+			if switched {
+				// Недособранные фрагменты со старого интерфейса больше не придут
+				photonParser = newParser()
+			}
+			photonParser.ReceivePacket(pkt.Payload)
 		}
 	}()
 
 	// Ожидаем сигнал завершения
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	<-ctx.Done()
 
 	log.Println("Завершение работы...")
+	<-captureDone
 	sender.Shutdown(config.SendShutdownGrace)
 }
