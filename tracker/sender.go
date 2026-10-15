@@ -3,9 +3,9 @@ package tracker
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"location-tracker/api"
@@ -16,14 +16,14 @@ import (
 type Transition struct {
 	From       string
 	To         string
-	Static     bool      // true → StaticEdge, false → Connect (есть TNL-конец)
+	Static     bool      // true → StaticEdge, false → DynamicEdge (есть TNL-конец)
 	DetectedAt time.Time // момент детекта, уходит на сервер как created_at
 }
 
 // edgeAPI — то, что sender использует из api.Client (нужно для тестов).
 type edgeAPI interface {
-	Connect(ctx context.Context, sourceID, targetID string, createdAt, expiresAt api.UTCTime) (*api.ConnectResponse, error)
-	StaticEdge(ctx context.Context, sourceID, targetID string, createdAt api.UTCTime) (*api.StaticEdgeResponse, error)
+	DynamicEdge(ctx context.Context, sourceID, targetID string, createdAt, expiresAt api.UTCTime) (*api.EdgeResponse, error)
+	StaticEdge(ctx context.Context, sourceID, targetID string, createdAt api.UTCTime) (*api.EdgeResponse, error)
 }
 
 // Sender отправляет переходы на сервер в отдельной горутине,
@@ -33,6 +33,9 @@ type Sender struct {
 	client edgeAPI
 	queue  chan Transition
 	maxAge time.Duration
+	// Отправка остановлена: токен отозван, игрок забанен или трекер устарел.
+	// Повторять бессмысленно до перезапуска трекера.
+	disabled atomic.Bool
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -65,6 +68,9 @@ func NewSender(client edgeAPI) *Sender {
 // Enqueue ставит переход в очередь. Никогда не блокирует:
 // если очередь переполнена, переход отбрасывается.
 func (s *Sender) Enqueue(tr Transition) {
+	if s.disabled.Load() {
+		return
+	}
 	select {
 	case s.queue <- tr:
 	default:
@@ -119,6 +125,9 @@ func (s *Sender) drain() {
 
 func (s *Sender) deliver(tr Transition) {
 	for attempt := 1; ; attempt++ {
+		if s.disabled.Load() {
+			return
+		}
 		if age := s.now().Sub(tr.DetectedAt); age > s.maxAge {
 			log.Printf("[API] Переход %s ➔ %s устарел (%s), не отправлен", tr.From, tr.To, age.Round(time.Second))
 			return
@@ -129,22 +138,33 @@ func (s *Sender) deliver(tr Transition) {
 			return
 		}
 
-		var apiErr *api.APIError
-		if errors.As(err, &apiErr) {
-			// Сервер ответил ok=false — повтор ничего не изменит.
+		switch {
+		case api.IsAuthError(err):
+			s.disable("Токен недействителен или аккаунт заблокирован (%v). "+
+				"Отправка на сервер остановлена, перезапустите трекер с флагом -login", err)
+			return
+		case api.IsOutdated(err):
+			s.disable("Трекер устарел (%v). Отправка на сервер остановлена, скачайте новую версию", err)
+			return
+		case !api.IsRetryable(err):
+			// 4xx: данные не прошли проверку сервера — повтор ничего не изменит.
 			log.Printf("[API] Сервер отклонил переход %s ➔ %s: %v", tr.From, tr.To, err)
 			return
 		}
 
 		log.Printf("[API] Ошибка отправки %s ➔ %s (попытка %d): %v", tr.From, tr.To, attempt, err)
 
+		delay := s.retryDelay(attempt)
+		if ra := api.RetryAfter(err); ra > delay {
+			delay = ra
+		}
 		select {
 		case <-s.stop:
 			// Выходим: повторов больше не делаем.
 			return
 		case <-s.ctx.Done():
 			return
-		case <-time.After(s.retryDelay(attempt)):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -159,12 +179,20 @@ func (s *Sender) send(tr Transition) error {
 		log.Printf("[API] StaticEdge %s ➔ %s: edge_id=%d created=%v", tr.From, tr.To, resp.EdgeID, resp.Created)
 		return nil
 	}
-	resp, err := s.client.Connect(s.ctx, tr.From, tr.To, createdAt, createdAt.Add(config.PortalLifetime))
+	resp, err := s.client.DynamicEdge(s.ctx, tr.From, tr.To, createdAt, createdAt.Add(config.PortalLifetime))
 	if err != nil {
 		return err
 	}
-	log.Printf("[API] Connect %s ➔ %s: edge_id=%d", tr.From, tr.To, resp.EdgeID)
+	log.Printf("[API] DynamicEdge %s ➔ %s: edge_id=%d created=%v status=%s",
+		tr.From, tr.To, resp.EdgeID, resp.Created, resp.Status)
 	return nil
+}
+
+// disable останавливает отправку и один раз пишет причину в лог.
+func (s *Sender) disable(format string, err error) {
+	if s.disabled.CompareAndSwap(false, true) {
+		log.Printf("[API] "+format, err)
+	}
 }
 
 // backoff: 2с, 4с, 8с, 16с, дальше 30с.

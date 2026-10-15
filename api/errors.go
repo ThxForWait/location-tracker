@@ -1,33 +1,69 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
 
-// APIError — серверная ошибка (ok=false).
+// APIError — ответ сервера с кодом не 2xx.
 type APIError struct {
-	Status  int            // HTTP-код
-	Message string         // поле "error"
-	Raw     map[string]any // всё тело целиком (missing, vertex_id и т.п.)
+	Status     int           // HTTP-код
+	Code       string        // машинный код из тела, например "unknown_zone"
+	Detail     string        // описание для человека
+	RetryAfter time.Duration // из заголовка Retry-After (для 429)
 }
 
 func (e *APIError) Error() string {
-	if e.Status > 0 {
-		return fmt.Sprintf("api error (%d): %s", e.Status, e.Message)
+	if e.Code != "" {
+		return fmt.Sprintf("api error %d %s: %s", e.Status, e.Code, e.Detail)
 	}
-	return "api error: " + e.Message
+	return fmt.Sprintf("api error %d: %s", e.Status, e.Detail)
 }
 
-// IsNotFound — true для 404 (unknown vertex).
-func IsNotFound(err error) bool {
+func asAPIError(err error) (*APIError, bool) {
 	var e *APIError
-	return errors.As(err, &e) && e.Status == http.StatusNotFound
+	ok := errors.As(err, &e)
+	return e, ok
 }
 
-// Field — удобный доступ к дополнительным полям ошибки (missing, vertex_id...).
-func (e *APIError) Field(name string) (any, bool) {
-	v, ok := e.Raw[name]
-	return v, ok
+// IsRetryable — стоит ли повторить запрос позже:
+// сетевые ошибки, 5xx и 429 — да; остальные 4xx — нет (повтор ничего не изменит).
+func IsRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	e, ok := asAPIError(err)
+	if !ok {
+		return true // сеть, таймаут, DNS
+	}
+	return e.Status == http.StatusTooManyRequests || e.Status >= 500
+}
+
+// IsAuthError — токена нет, он отозван (401) или игрок заблокирован (403).
+func IsAuthError(err error) bool {
+	e, ok := asAPIError(err)
+	return ok && (e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden)
+}
+
+// IsOutdated — сервер требует более новую версию трекера (426).
+func IsOutdated(err error) bool {
+	e, ok := asAPIError(err)
+	return ok && e.Status == http.StatusUpgradeRequired
+}
+
+// IsPending — вход через браузер ещё не подтверждён (428).
+func IsPending(err error) bool {
+	e, ok := asAPIError(err)
+	return ok && e.Status == http.StatusPreconditionRequired
+}
+
+// RetryAfter — сколько сервер просил подождать (0, если не просил).
+func RetryAfter(err error) time.Duration {
+	if e, ok := asAPIError(err); ok {
+		return e.RetryAfter
+	}
+	return 0
 }

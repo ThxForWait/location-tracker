@@ -1,51 +1,69 @@
 package api
 
-// Команды (должны совпадать с сервером).
-const (
-	CmdConnect    = 1 // динамическое ребро с TNL
-	CmdStaticEdge = 2 // статичное ребро между не-TNL зонами
-)
+// Модели запросов и ответов API v1 (сервер: albiontrackermap/api_v1.py).
 
-// envelope — общая часть ответа сервера.
-type envelope struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
-	Command int    `json:"command,omitempty"`
-}
+// ---- Рёбра графа ----
 
-// ---- Команда 1: connect ----
-
-type ConnectRequest struct {
-	Command   int     `json:"command"`
+// DynamicEdgeRequest — POST /edges/dynamic: переход через портал Авалона.
+type DynamicEdgeRequest struct {
 	SourceID  string  `json:"source_id"`
 	TargetID  string  `json:"target_id"`
 	CreatedAt UTCTime `json:"created_at"`
 	ExpiresAt UTCTime `json:"expires_at"`
 }
 
-type ConnectResponse struct {
-	envelope
-	EdgeID    int64   `json:"edge_id"`
-	SourceID  string  `json:"source_id"`
-	TargetID  string  `json:"target_id"`
-	CreatedAt UTCTime `json:"created_at"`
-	ExpiresAt UTCTime `json:"expires_at"`
-}
-
-// ---- Команда 2: static_edge ----
-
+// StaticEdgeRequest — POST /edges/static: постоянный переход.
 type StaticEdgeRequest struct {
-	Command   int     `json:"command"`
 	SourceID  string  `json:"source_id"`
 	TargetID  string  `json:"target_id"`
 	CreatedAt UTCTime `json:"created_at"`
 }
 
-type StaticEdgeResponse struct {
-	envelope
-	EdgeID    int64   `json:"edge_id"`
-	Created   bool    `json:"created"`
-	SourceID  string  `json:"source_id"`
-	TargetID  string  `json:"target_id"`
-	CreatedAt UTCTime `json:"created_at"`
+// EdgeResponse — ответ на оба запроса рёбер.
+type EdgeResponse struct {
+	EdgeID   int64  `json:"edge_id"`
+	SourceID string `json:"source_id"`
+	TargetID string `json:"target_id"`
+	// true — ребро создано, false — подтверждено уже существующее
+	Created bool `json:"created"`
+	// Только для динамических рёбер: unconfirmed / confirmed / disputed
+	Status        string `json:"status,omitempty"`
+	Confirmations int    `json:"confirmations,omitempty"`
+}
+
+// ---- Вход через браузер (device flow) ----
+
+type DeviceStartRequest struct {
+	DeviceName string `json:"device_name"`
+}
+
+type DeviceStartResponse struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURL string `json:"verification_url"`
+	ExpiresIn       int    `json:"expires_in"` // секунды
+	Interval        int    `json:"interval"`   // секунды между опросами
+}
+
+type DevicePollRequest struct {
+	DeviceCode string `json:"device_code"`
+}
+
+type DevicePollResponse struct {
+	Token           string `json:"token"`
+	DiscordUsername string `json:"discord_username"`
+}
+
+// MeResponse — GET /me: кому принадлежит токен.
+type MeResponse struct {
+	DiscordID       string `json:"discord_id"`
+	DiscordUsername string `json:"discord_username"`
+	DeviceName      string `json:"device_name"`
+	IsTrusted       bool   `json:"is_trusted"`
+}
+
+// errorBody — тело ошибки сервера: {"detail": "...", "code": "..."}.
+type errorBody struct {
+	Detail string `json:"detail"`
+	Code   string `json:"code"`
 }

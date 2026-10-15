@@ -109,7 +109,7 @@ func (f *fakeAPI) next() error {
 	return err
 }
 
-func (f *fakeAPI) Connect(ctx context.Context, _, _ string, _, _ api.UTCTime) (*api.ConnectResponse, error) {
+func (f *fakeAPI) DynamicEdge(ctx context.Context, _, _ string, _, _ api.UTCTime) (*api.EdgeResponse, error) {
 	if f.block != nil {
 		select {
 		case f.started <- struct{}{}:
@@ -124,14 +124,14 @@ func (f *fakeAPI) Connect(ctx context.Context, _, _ string, _, _ api.UTCTime) (*
 	if err := f.next(); err != nil {
 		return nil, err
 	}
-	return &api.ConnectResponse{}, nil
+	return &api.EdgeResponse{}, nil
 }
 
-func (f *fakeAPI) StaticEdge(context.Context, string, string, api.UTCTime) (*api.StaticEdgeResponse, error) {
+func (f *fakeAPI) StaticEdge(context.Context, string, string, api.UTCTime) (*api.EdgeResponse, error) {
 	if err := f.next(); err != nil {
 		return nil, err
 	}
-	return &api.StaticEdgeResponse{}, nil
+	return &api.EdgeResponse{}, nil
 }
 
 func (f *fakeAPI) Calls() int {
@@ -161,7 +161,7 @@ func TestSenderRetriesNetworkErrors(t *testing.T) {
 }
 
 func TestSenderNoRetryOnAPIError(t *testing.T) {
-	a := &fakeAPI{errs: []error{&api.APIError{Status: 400, Message: "bad"}}}
+	a := &fakeAPI{errs: []error{&api.APIError{Status: 422, Code: "unknown_zone"}}}
 	s := newTestSender(a)
 	s.Enqueue(Transition{From: "A", To: "B", Static: true, DetectedAt: time.Now()})
 	s.Shutdown(time.Second)
@@ -203,5 +203,35 @@ func TestEnqueueNeverBlocks(t *testing.T) {
 	s.Shutdown(50 * time.Millisecond)
 	if time.Since(start) > time.Second {
 		t.Fatal("Shutdown не уложился в отведённое время")
+	}
+}
+
+func TestSenderRetriesServerErrors(t *testing.T) {
+	a := &fakeAPI{errs: []error{&api.APIError{Status: 503}, &api.APIError{Status: 429}}}
+	s := newTestSender(a)
+	s.Enqueue(Transition{From: "A", To: "B", DetectedAt: time.Now()})
+	for deadline := time.Now().Add(time.Second); a.Calls() < 3 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	s.Shutdown(time.Second)
+	if a.Calls() != 3 {
+		t.Fatalf("5xx и 429 должны повторяться: %d попыток", a.Calls())
+	}
+}
+
+func TestSenderStopsOnAuthError(t *testing.T) {
+	for _, status := range []int{401, 403, 426} {
+		a := &fakeAPI{errs: []error{&api.APIError{Status: status}}}
+		s := newTestSender(a)
+		s.Enqueue(Transition{From: "A", To: "B", DetectedAt: time.Now()})
+		for deadline := time.Now().Add(time.Second); a.Calls() < 1 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		// После отказа следующие переходы уже не отправляются
+		s.Enqueue(Transition{From: "B", To: "C", DetectedAt: time.Now()})
+		s.Shutdown(time.Second)
+		if a.Calls() != 1 {
+			t.Errorf("статус %d: ожидался 1 запрос, было %d", status, a.Calls())
+		}
 	}
 }

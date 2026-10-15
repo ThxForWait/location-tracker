@@ -15,8 +15,16 @@ const LogFilePath = "location_history.log"
 // Размер буфера для канала с сырыми пакетами
 const PacketChannelSize = 4096
 
-const DebugApiUrl = "http://127.0.0.1:8000/map/api/packet/" // только для дебаг (флаг -debug)
-const ApiUrl = "https://telifon-map.heliohost.us/albion-tracker-map/map/api/packet/"
+// Базовые адреса API v1 (пути /edges/..., /device/... добавляет api.Client)
+const DebugApiUrl = "http://127.0.0.1:8000/api/v1" // только для дебаг (флаг -debug)
+const ApiUrl = "https://telifon-map.heliohost.us/albion-tracker-map/api/v1"
+
+// Версия трекера, уходит на сервер в X-Client-Version.
+// Задаётся при сборке: go build -ldflags "-X location-tracker/config.Version=1.0.0"
+var Version = "dev"
+
+// Папка настроек в %APPDATA% (там хранится токен устройства)
+const AppDirName = "AlbionTracker"
 
 // Время жизни портала Авалона, которое отправляется на сервер.
 // Пока фиксированное значение для теста: реального таймера в пакетах не найдено.

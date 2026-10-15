@@ -5,12 +5,15 @@ import (
 	"context"
 	_ "embed"
 	"flag"
+	"fmt"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"location-tracker/api"
+	"location-tracker/auth"
 	"location-tracker/capture"
 	"location-tracker/config"
 	"location-tracker/photon"
@@ -29,6 +32,8 @@ func main() {
 	debug := flag.Bool("debug", false, "Отправлять данные на локальный сервер ("+config.DebugApiUrl+")")
 	apiURL := flag.String("api", "", "URL API (по умолчанию боевой сервер, с -debug — локальный)")
 	zonesPath := flag.String("zones", "", "Путь к zones.json (по умолчанию встроенный)")
+	loginFlag := flag.Bool("login", false, "Заново подключить трекер к аккаунту через браузер")
+	tokenFlag := flag.String("token", "", "Токен устройства (вместо входа через браузер, не сохраняется)")
 	flag.Parse()
 	if *listFlag {
 		if err := capture.PrintList(); err != nil {
@@ -64,7 +69,15 @@ func main() {
 			url = config.DebugApiUrl
 		}
 	}
-	apiClient := api.NewClient(url)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	log.Printf("Версия трекера: %s", config.Version)
+	apiClient := api.NewClient(url, config.Version)
+	if err := connectAccount(ctx, apiClient, *loginFlag, *tokenFlag); err != nil {
+		log.Fatalf("Не удалось подключиться к аккаунту: %v", err)
+	}
 	sender := tracker.NewSender(apiClient)
 	tracker, err := tracker.NewTracker(sender)
 	if err != nil {
@@ -84,9 +97,6 @@ func main() {
 			},
 		)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// Запускаем захват пакетов (модуль 1) со всех интерфейсов в отдельной горутине
 	captureDone := make(chan struct{})
@@ -121,4 +131,27 @@ func main() {
 	log.Println("Завершение работы...")
 	<-captureDone
 	sender.Shutdown(config.SendShutdownGrace)
+}
+
+// connectAccount ставит клиенту токен: из -token, из сохранённых или через вход в браузере.
+func connectAccount(ctx context.Context, client *api.Client, forceLogin bool, token string) error {
+	path, err := auth.DefaultPath()
+	if err != nil {
+		return err
+	}
+	deviceName, _ := os.Hostname()
+	err = auth.EnsureToken(ctx, client, auth.Options{
+		Path:        path,
+		ForceLogin:  forceLogin,
+		Token:       token,
+		DeviceName:  deviceName,
+		OpenBrowser: auth.OpenBrowser,
+	})
+	switch {
+	case api.IsOutdated(err):
+		return fmt.Errorf("трекер устарел, скачайте новую версию: %w", err)
+	case api.IsAuthError(err):
+		return fmt.Errorf("токен не принят сервером (запустите с -login): %w", err)
+	}
+	return err
 }
