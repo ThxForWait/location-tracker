@@ -2,29 +2,45 @@
 package tracker
 
 import (
-	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
 	"time"
 
-	"location-tracker/api"
 	"location-tracker/config"
 	"location-tracker/photon"
 )
 
+const unknownZone = "unknown"
+
+// Коды операций Albion, по которым определяется переход.
+const (
+	opChangeCluster = 41 // начало перехода (до экрана загрузки), param 0 — ID зоны
+	opJoin          = 2  // окончательный вход в зону после загрузки, param 8 — ID зоны
+)
+
+// transitionSink — куда трекер отдаёт переходы для отправки (Sender).
+type transitionSink interface {
+	Enqueue(Transition)
+}
+
 // Tracker обрабатывает события от парсера и записывает переходы в файл.
 type Tracker struct {
+	logOut  io.Writer
 	logFile *os.File
 	mu      sync.Mutex
+	// currentZoneID — зона, в которой игрок сейчас (подтверждена ответом 2).
 	currentZoneID string
-	NextZoneID string
-	apiClient *api.Client
+	// pendingZoneID — зона, ожидаемая после ответа 41; нужна только для сверки.
+	pendingZoneID string
+	sink          transitionSink
+	now           func() time.Time
 }
 
 // NewTracker создает новый трекер и открывает файл для записи.
-func NewTracker(apiClient *api.Client) (*Tracker, error) {
+func NewTracker(sink transitionSink) (*Tracker, error) {
 	file, err := os.OpenFile(config.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось открыть файл лога: %w", err)
@@ -32,18 +48,18 @@ func NewTracker(apiClient *api.Client) (*Tracker, error) {
 
 	log.Printf("Логирование переходов будет вестись в файл: %s", config.LogFilePath)
 
-	return &Tracker{
-		logFile: file,
-		currentZoneID: "unknown",
-		NextZoneID: "unknown",
-		apiClient: apiClient,
-	}, nil
+	t := newTracker(file, sink)
+	t.logFile = file
+	return t, nil
 }
 
-// HandleEvent обрабатывает одно событие от Photon-парсера.
-// code — код события, parameters — срез параметров.
-func (t *Tracker) OnEvent(ev *photon.EventData) {
-	//log.Printf("EVENTDATA: %v+", ev)
+func newTracker(logOut io.Writer, sink transitionSink) *Tracker {
+	return &Tracker{
+		logOut:        logOut,
+		currentZoneID: unknownZone,
+		sink:          sink,
+		now:           time.Now,
+	}
 }
 
 func (t *Tracker) OnResponse(resp *photon.OperationResponse) {
@@ -51,98 +67,86 @@ func (t *Tracker) OnResponse(resp *photon.OperationResponse) {
 	if albionOp == 0 {
 		albionOp = int64(resp.OperationCode)
 	}
-	clusterId := ""
-	switch albionOp{
-
-		case 41:
-			clusterId = photon.GetStr(resp.Parameters, 0)
-			if clusterId == ""  {log.Printf("Ошибка в считывании ID локации, OpCode 41"); return}
-			t.NextZoneID = clusterId
-		case 2:
-			clusterId = photon.GetStr(resp.Parameters, 8)
-			if clusterId == ""  {log.Printf("Ошибка в считывании ID локации, OpCode 2"); return}
-			if clusterId != t.NextZoneID {
-				log.Printf("Ошибка, ID в OpCode 41 и 2 не совпало")
-				t.currentZoneID = clusterId
-				t.NextZoneID = "unknown"
-			}
-			t.saveLocation(clusterId)
-		default :
-			//log.Printf("Необработанный пакет OnResponse code: %d , data %v+", albionOp, resp.Parameters)
-	}
-
-
-}
-
-func (t *Tracker) handleZoneChange(parameters []interface{}) {
-	if len(parameters) == 0 {
-		return
-	}
-
-	var newZoneID string = "unknown"
-	switch v := parameters[0].(type) {
-	case int, int32, int64:
-		newZoneID = fmt.Sprintf("%v", v)
-	case string:
-		newZoneID = v
-	case []byte:
-		newZoneID = string(v)
-	}
-
-	if newZoneID != "unknown" && newZoneID != "0" {
-		t.saveLocation(newZoneID)
+	switch albionOp {
+	case opChangeCluster:
+		clusterId := photon.GetStr(resp.Parameters, 0)
+		if clusterId == "" {
+			log.Printf("Ошибка в считывании ID локации, OpCode 41")
+			return
+		}
+		t.mu.Lock()
+		t.pendingZoneID = clusterId
+		t.mu.Unlock()
+	case opJoin:
+		clusterId := photon.GetStr(resp.Parameters, 8)
+		if clusterId == "" {
+			log.Printf("Ошибка в считывании ID локации, OpCode 2")
+			return
+		}
+		t.enterZone(clusterId)
 	}
 }
 
-// Вспомогательный метод для красивого вывода и записи в файл
-func (t *Tracker) saveLocation(newZoneID string) {
+// enterZone фиксирует вход в зону по ответу 2 — он источник истины.
+func (t *Tracker) enterZone(newZoneID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Игнорируем дубликаты: если сервер прислал тот же ID дважды подряд (например, в маленьком и большом пакете),
-	// мы не пишем переход на самого себя.
+	if t.pendingZoneID != "" && t.pendingZoneID != newZoneID {
+		log.Printf("Предупреждение: ID в OpCode 41 (%s) и 2 (%s) не совпали, используется ID из 2",
+			t.pendingZoneID, newZoneID)
+	}
+	t.pendingZoneID = ""
+
+	// Игнорируем дубликаты: сервер может прислать тот же ID повторно.
 	if newZoneID == t.currentZoneID {
 		return
 	}
-	
-	
-	// 1. Переводим старый и новый ID в понятные названия через базу зон data/zones.json
-	oldZoneName := config.DB.GetZoneName(t.currentZoneID)
-	newZoneName := config.DB.GetZoneName(newZoneID)
 
-	// 2. Выводим красивую стрелочку в консоль программы
-	log.Printf("[ПЕРЕХОД] %s ➔ %s", oldZoneName, newZoneName)
-
-	// 3. Записываем отформатированную строку в текстовый файл
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	logLine := fmt.Sprintf("%s | %s [%s] ➔ %s [%s]\n",
-		timestamp, oldZoneName, t.currentZoneID, newZoneName, newZoneID)
-
-	if _, err := t.logFile.WriteString(logLine); err != nil {
-		log.Printf("Ошибка записи в файл лога: %v", err)
-	}
-	
-	// 4. Обновляем текущий ID локации: теперь «новая» зона стала нашей «текущей»
 	oldZoneID := t.currentZoneID
 	t.currentZoneID = newZoneID
+	now := t.now()
 
-	now := api.NowUTC()
-	resp, err := t.apiClient.Connect(
-		context.Background(), // ← вот он, ctx
-		oldZoneID, newZoneID,
-		now, now.Add(2*time.Hour),
-	)
-	if err != nil {
-		log.Printf("api.Connect error: %v", err)
-		return
+	tr, send, reason := classifyTransition(oldZoneID, newZoneID, now)
+
+	oldZoneName := config.DB.GetZoneName(oldZoneID)
+	newZoneName := config.DB.GetZoneName(newZoneID)
+	log.Printf("[ПЕРЕХОД] %s ➔ %s (%s)", oldZoneName, newZoneName, reason)
+
+	logLine := fmt.Sprintf("%s | %s [%s] ➔ %s [%s] | %s\n",
+		now.Format("2006-01-02 15:04:05"), oldZoneName, oldZoneID, newZoneName, newZoneID, reason)
+	if _, err := io.WriteString(t.logOut, logLine); err != nil {
+		log.Printf("Ошибка записи в файл лога: %v", err)
 	}
-	log.Printf("api.Connect: %v", resp)
 
-	
+	// Enqueue не блокирует, так что сеть никогда не держит mutex и разбор пакетов.
+	if send {
+		t.sink.Enqueue(tr)
+	}
 }
 
+// classifyTransition решает, отправлять ли переход и каким типом ребра.
+func classifyTransition(fromID, toID string, at time.Time) (Transition, bool, string) {
+	if fromID == unknownZone {
+		return Transition{}, false, "старт, не отправляется"
+	}
+	from := config.DB.GetZoneKind(fromID)
+	to := config.DB.GetZoneKind(toID)
+	if from == config.ZoneInstance || to == config.ZoneInstance {
+		return Transition{}, false, "инстанс, не отправляется"
+	}
+	static := from == config.ZoneStatic && to == config.ZoneStatic
+	tr := Transition{From: fromID, To: toID, Static: static, DetectedAt: at}
+	if static {
+		return tr, true, "static"
+	}
+	return tr, true, "connect"
+}
 
 // Close закрывает файл лога.
 func (t *Tracker) Close() error {
+	if t.logFile == nil {
+		return nil
+	}
 	return t.logFile.Close()
 }

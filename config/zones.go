@@ -16,6 +16,30 @@ type ZoneInfo struct {
 	Tier    int    `json:"tier"`
 }
 
+// ZoneKind — категория локации с точки зрения карты.
+type ZoneKind int
+
+const (
+	// ZoneInstance — всё, что не является узлом карты: данжи, острова,
+	// хайдауты, арены, Мгла и неизвестные ID. На сервер не отправляется.
+	ZoneInstance ZoneKind = iota
+	// ZoneStatic — постоянная зона открытого мира (города, открытые зоны, проходы).
+	ZoneStatic
+	// ZoneRoad — зона Дорог Авалона (TNL-*).
+	ZoneRoad
+)
+
+func (k ZoneKind) String() string {
+	switch k {
+	case ZoneStatic:
+		return "static"
+	case ZoneRoad:
+		return "road"
+	default:
+		return "instance"
+	}
+}
+
 // ZonesDatabase хранит карту всех зон в оперативной памяти
 type ZonesDatabase struct {
 	mu    sync.RWMutex
@@ -26,22 +50,27 @@ var DB = &ZonesDatabase{
 	zones: make(map[string]ZoneInfo),
 }
 
-// LoadЗагружает данные из zones.json в память компьютера
+// Load загружает данные из файла zones.json в память компьютера
 func (db *ZonesDatabase) Load(filePath string) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	fileBytes, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("не удалось прочитать файл зон: %w", err)
 	}
+	return db.LoadBytes(fileBytes)
+}
 
-	// Десериализуем JSON прямо в нашу карту Go
-	if err := json.Unmarshal(fileBytes, &db.zones); err != nil {
+// LoadBytes загружает зоны из уже прочитанного JSON (например, встроенного в бинарник).
+func (db *ZonesDatabase) LoadBytes(data []byte) error {
+	zones := make(map[string]ZoneInfo)
+	if err := json.Unmarshal(data, &zones); err != nil {
 		return fmt.Errorf("ошибка парсинга JSON зон: %w", err)
 	}
 
-	fmt.Printf("[БАЗА ДАННЫХ] Успешно загружено локаций: %d\n", len(db.zones))
+	db.mu.Lock()
+	db.zones = zones
+	db.mu.Unlock()
+
+	fmt.Printf("[БАЗА ДАННЫХ] Успешно загружено локаций: %d\n", len(zones))
 	return nil
 }
 
@@ -75,4 +104,32 @@ func (db *ZonesDatabase) GetZoneName(zoneID string) string {
 	}
 
 	return "Неизвестная локация [ID: " + id + "]"
+}
+
+// GetZoneKind определяет категорию зоны по полю type из zones.json.
+// ID, которых нет в базе (хайдауты @HIDEOUT@..., Мгла @MISTS..., "1201-3" и т.п.),
+// считаются инстансами.
+func (db *ZonesDatabase) GetZoneKind(zoneID string) ZoneKind {
+	db.mu.RLock()
+	zone, exists := db.zones[strings.TrimSpace(zoneID)]
+	db.mu.RUnlock()
+	if !exists {
+		return ZoneInstance
+	}
+	return classifyZoneType(zone.Type)
+}
+
+func classifyZoneType(zoneType string) ZoneKind {
+	switch {
+	case strings.HasPrefix(zoneType, "TUNNEL_"):
+		return ZoneRoad
+	case strings.HasPrefix(zoneType, "OPENPVP_"),
+		strings.HasPrefix(zoneType, "PASSAGE_"),
+		strings.HasPrefix(zoneType, "PLAYERCITY_") && !strings.Contains(zoneType, "HALL_OF_FAME"),
+		zoneType == "STARTINGCITY",
+		zoneType == "SAFEAREA",
+		zoneType == "STARTAREA":
+		return ZoneStatic
+	}
+	return ZoneInstance
 }

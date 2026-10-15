@@ -2,23 +2,32 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"location-tracker/api"
 	"location-tracker/capture"
 	"location-tracker/config"
 	"location-tracker/photon"
 	"location-tracker/tracker"
-	"location-tracker/api"
 )
+
+// База зон встроена в бинарник, чтобы exe работал без папки data рядом.
+//
+//go:embed data/zones.json
+var embeddedZones []byte
 
 func main() {
 	// Флаг для указания сетевого интерфейса
 	iface := flag.String("iface", "auto", "Сетевой интерфейс или 'auto' для автовыбора")
 	listFlag := flag.Bool("list", false, "Показать список интерфейсов и выйти")
+	debug := flag.Bool("debug", false, "Отправлять данные на локальный сервер ("+config.DebugApiUrl+")")
+	apiURL := flag.String("api", "", "URL API (по умолчанию боевой сервер, с -debug — локальный)")
+	zonesPath := flag.String("zones", "", "Путь к zones.json (по умолчанию встроенный)")
 	flag.Parse()
 	if *listFlag {
 		if err := capture.PrintList(); err != nil {
@@ -34,8 +43,14 @@ func main() {
 		}
 		ifaceName = chosen
 	}
-	//файл с айдишниками локаций
-	err := config.DB.Load("C:/PyProj/location-tracker/data/zones.json")
+
+	// База зон: встроенная или из файла
+	var err error
+	if *zonesPath != "" {
+		err = config.DB.Load(*zonesPath)
+	} else {
+		err = config.DB.LoadBytes(embeddedZones)
+	}
 	if err != nil {
 		log.Fatalf("Критическая ошибка старта: %v", err)
 	}
@@ -44,27 +59,29 @@ func main() {
 	packetChan := make(chan []byte, config.PacketChannelSize)
 
 	// Инициализируем трекер (модуль 3)
-	apiClient := api.NewClient(config.ApiUrl)
-	tracker, err := tracker.NewTracker(apiClient)
+	url := *apiURL
+	if url == "" {
+		url = config.ApiUrl
+		if *debug {
+			url = config.DebugApiUrl
+		}
+	}
+	apiClient := api.NewClient(url)
+	sender := tracker.NewSender(apiClient)
+	tracker, err := tracker.NewTracker(sender)
 	if err != nil {
 		log.Fatalf("Ошибка инициализации трекера: %v", err)
 	}
 	defer tracker.Close()
 
 	// Инициализируем парсер (модуль 2)
-	// Передаем ему обработчик событий из трекера
-	//photonParser := photon.NewParser(nil, tracker.HandleResponse)
+	// События пока не используются, поэтому их колбек не передаём.
 	photonParser := photon.NewPhotonParser(
-		func(ev *photon.EventData) { // промежуточный колбек
-			photon.PostProcessEvent(ev)// полуобработаные данные
-			photon.FinalizeEvent(ev)// тут функция которая обрабанывает данные окончательно
-			tracker.OnEvent(ev) // уже настоящий кол бек получает полность обработанные данны
-		},
 		nil,
-		func(resp *photon.OperationResponse) { // промежуточный колбек
-			photon.PostProcessResponse(resp)// полуобработаные данные
-			photon.FinalizeResponse(resp)// тут функция которая обрабанывает данные окончательно
-			tracker.OnResponse(resp) // уже настоящий кол бек получает полность обработанные данны
+		nil,
+		func(resp *photon.OperationResponse) {
+			photon.FinalizeResponse(resp) // внутри уже вызывается PostProcessResponse
+			tracker.OnResponse(resp)
 		},
 	)
 
@@ -82,7 +99,6 @@ func main() {
 	go func() {
 		for payload := range packetChan {
 			photonParser.ReceivePacket(payload)
-			//log.Printf("новый пакет")
 		}
 	}()
 
@@ -92,4 +108,5 @@ func main() {
 	<-sigChan
 
 	log.Println("Завершение работы...")
+	sender.Shutdown(config.SendShutdownGrace)
 }

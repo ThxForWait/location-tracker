@@ -1,6 +1,8 @@
 // config/config.go
 package config
 
+import "time"
+
 // Порт игрового сервера Albion Online (UDP)
 const GamePort = 5056
 
@@ -13,4 +15,18 @@ const LogFilePath = "location_history.log"
 // Размер буфера для канала с сырыми пакетами
 const PacketChannelSize = 4096
 
+const DebugApiUrl = "http://127.0.0.1:8000/map/api/packet/" // только для дебаг (флаг -debug)
 const ApiUrl = "https://telifon-map.heliohost.us/albion-tracker-map/map/api/packet/"
+
+// Время жизни портала Авалона, которое отправляется на сервер.
+// Пока фиксированное значение для теста: реального таймера в пакетах не найдено.
+const PortalLifetime = 2 * time.Hour
+
+// Размер очереди переходов, ожидающих отправки на сервер.
+const SendQueueSize = 256
+
+// Переход старше этого возраста больше не отправляется (сервер его всё равно отвергнет).
+const SendMaxAge = 5 * time.Minute
+
+// Сколько ждать досылки очереди при выходе по Ctrl+C.
+const SendShutdownGrace = 3 * time.Second

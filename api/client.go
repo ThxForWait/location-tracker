@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+	"log"
 )
 
 // Client — тонкая обёртка над HTTP API.
@@ -18,6 +19,7 @@ type Client struct {
 
 // New создаёт клиент с разумным таймаутом.
 func NewClient(baseURL string) *Client {
+	log.Printf("Api работает на url %s", baseURL)
 	return &Client{
 		BaseURL: baseURL,
 		HTTP:    &http.Client{Timeout: 10 * time.Second},
